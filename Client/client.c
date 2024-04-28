@@ -1,172 +1,197 @@
-
-
-/* 
- * udpserver.c - A simple UDP echo server 
- * usage: udpserver <port>
- */
-
 #include <stdio.h>
-#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
-#include <netdb.h>
-#include <sys/types.h> 
-#include <sys/socket.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
-#include <dirent.h>
+#include <signal.h>
+#include <unistd.h>
+#include <syslog.h>
 
-#define BUFSIZE 1024
+#define SIZE 10241
 
-/*
- * error - wrapper for perror
- */
-void error(char *msg) {
-  perror(msg);
-  exit(1);
+char marker[]="ANEESHGURRAM";
+#define IMAGE_CAP "capture.ppm"
+FILE* image;
+int sock_fd= -1;
+int st_kill_process=0;
+void cleanup_on_exit()
+{
+    close(sock_fd);
+    fclose(image);
+    remove(IMAGE_CAP);
+    closelog();
 }
 
-int main(int argc, char **argv) 
+// signal handler for closing the connection
+void sig_handler(int signal_number)
 {
-  int sockfd; /* socket */
-  int portno; /* port to listen on */
-  int clientlen; /* byte size of client's address */
-  struct sockaddr_in serveraddr; /* server's addr */
-  struct sockaddr_in clientaddr; /* client addr */
-  struct hostent *hostp; /* client host info */
-  char buf[BUFSIZE]; /* message buf */
-  char command[BUFSIZE];// to store the command part
-  char file_name[BUFSIZE]; // tostore the file name.
-  char *hostaddrp; /* dotted decimal host addr string */
-  int optval; /* flag value for setsockopt */
-  int n; /* message byte size */
+    st_kill_process = 1;
+    syslog(LOG_INFO, "SIGINT/ SIGTERM encountered: exiting the process...");
+    cleanup_on_exit();
+    exit(EXIT_SUCCESS);
+}
 
-  /* 
-   * check command line arguments 
-   */
-  if (argc != 2) {
-    fprintf(stderr, "usage: %s <port>\n", argv[0]);
-    exit(1);
-  }
-  portno = atoi(argv[1]);
 
-  /* 
-   * socket: create the parent socket 
-   */
-  sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-  if (sockfd < 0) 
-    error("ERROR opening socket");
-
-  /* setsockopt: Handy debugging trick that lets 
-   * us rerun the server immediately after we kill it; 
-   * otherwise we have to wait about 20 secs. 
-   * Eliminates "ERROR on binding: Address already in use" error. 
-   */
-  optval = 1;
-  setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, 
-	     (const void *)&optval , sizeof(int));
-
-  /*
-   * build the server's Internet address
-   */
-  bzero((char *) &serveraddr, sizeof(serveraddr));
-  serveraddr.sin_family = AF_INET;
-  serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);
-  serveraddr.sin_port = htons((unsigned short)portno);
-
-  /* 
-   * bind: associate the parent socket with a port 
-   */
-  if (bind(sockfd, (struct sockaddr *) &serveraddr, 
-	   sizeof(serveraddr)) < 0) 
-    error("ERROR on binding");
-
-  /* 
-   * main loop: wait for a datagram, then echo it
-   */
-  
-  while (1) {
-
-clientlen = sizeof(clientaddr);
-    /*
-     * recvfrom: receive a UDP datagram from a client
-     */
-     bzero(command,1024);
-     bzero(file_name,1024);
-    bzero(buf, BUFSIZE);
-    
-          n = recvfrom(sockfd, buf, 1024, 0,  (struct sockaddr *)&clientaddr, &clientlen);
-          if (n < 0) 
-            error("ERROR in recvfrom");
-
-          //In the case of file existing we first receive the size of the file in bytes.
-          int count = atoi(buf);
-          bzero(buf, BUFSIZE);
-          count= count-2;
-          
-while(count--)
-
+int write_file(int sockfd)
 {
-	n = recvfrom(sockfd, buf, BUFSIZE, 0,
-		 (struct sockaddr *) &clientaddr, &clientlen);
-    if (n < 0)
-      error("ERROR in recvfrom");
-    n = recvfrom(sockfd, command, BUFSIZE, 0,
-		 (struct sockaddr *) &clientaddr, &clientlen);
-    if (n < 0)
-      error("ERROR in recvfrom");
-    n = recvfrom(sockfd, file_name, BUFSIZE, 0,
-		 (struct sockaddr *) &clientaddr, &clientlen);
-    if (n < 0)
-      error("ERROR in recvfrom");
-    bzero(buf, BUFSIZE);
+	    int recv_size = 0, size = 0, read_size, write_size, packet_index = 1, retval;
+    char imagearray[10241];
+    char ack = '#';
     
-        if(!(strcmp(command,"put")))
+    do
     {
-          printf("Receiving file size\n");
-          n = recvfrom(sockfd, buf, 1024, 0,  (struct sockaddr *)&clientaddr, &clientlen);
-          if (n < 0) 
-            error("ERROR in recvfrom");
+        retval = read(sockfd, &size, sizeof(int));
+    } while (retval < 0);
 
-          //In the case of file existing we first receive the size of the file in bytes.
-          int file_size = atoi(buf);
-          char *endptr;
-          file_size = strtol(buf, &endptr, 10);
-          bzero(buf,1024);
-          printf("Receiving file %s from client  of Filesize: %d\n", file_name, file_size);
-          FILE* file_write = fopen(file_name, "wb");
-          if(file_write == NULL)
-          {
-              error("Error in opening the file to write the data that is to be recieved");
-          }
-          //int cumulatives_bytes_transferred=0;
-          int byte_transfer_size=1024;
-          for(int cumulatives_bytes_transferred=0; file_size>=cumulatives_bytes_transferred;cumulatives_bytes_transferred+=byte_transfer_size)
-          {
-              bzero(buf, 1024);
-              // considering last transfer case.
-              if(file_size- cumulatives_bytes_transferred < 1024)
-              {
-                byte_transfer_size= file_size- cumulatives_bytes_transferred;
-              }
-              n = recvfrom(sockfd, buf, 1024, 0, (struct sockaddr *)&clientaddr, &clientlen);
-              if (n < 0)
-                error("ERROR in recvfrom");
-              // cumulative count increments by an amount of byte_transfer_size.
-              printf("Received %d bytes of data in total till now from %d in total\n",cumulatives_bytes_transferred,file_size);
-              fwrite(buf, byte_transfer_size, 1, file_write);
-              if(byte_transfer_size<1024)
-              {
-                printf("file transfer complete to client\n");
-                //fclose(file_write);
-                break;
-              }
+    printf("size of the image identified as %d\n", size);
+   // syslog(LOG_INFO, "size of the image identified as %d\n", size);
+    
+    
+    image = fopen(IMAGE_CAP, "wb+");
 
-          }
-          fclose(file_write);
+    if (image == NULL)
+    {
+        printf("Error has occurred. Image file could not be opened\n");
+        return -1;
     }
-      
-}          
-  }
-  return 0;
+    
+    
+    struct timeval timeout = {10, 0};
+
+    fd_set fds;
+    int buffer_fd;
+
+    while (recv_size < size)
+    {
+        FD_ZERO(&fds);
+        FD_SET(sockfd, &fds);
+
+        buffer_fd = select(FD_SETSIZE, &fds, NULL, NULL, &timeout);
+        // syslog(LOG_INFO,"Select %d",errno);
+
+        if (buffer_fd < 0)
+        {
+            syslog(LOG_ERR, "error: bad file descriptor set.\n");
+             perror("[-]error: bad file descriptor set.");
+            cleanup_on_exit();
+        }
+
+        if (buffer_fd == 0)
+        {
+            syslog(LOG_ERR, "error: buffer read timeout expired.\n");
+             perror("[-]error: buffer read timeout expired.");
+            cleanup_on_exit();
+        }
+
+        if (buffer_fd > 0)
+        {
+            do
+            {
+                read_size = read(sockfd, imagearray, 10241);
+            } while (read_size < 0);
+            printf("\n\rread_size%d", read_size);
+            syslog(LOG_INFO, "read_size%d", read_size);
+
+            // Write the currently read data into our image file
+            write_size = fwrite(imagearray, 1, read_size, image);
+            syslog(LOG_INFO, "write_size%d", write_size);
+            printf("\n\rwrite_size%d", write_size);
+            if (read_size != write_size)
+            {
+                printf("error in read write\n");
+            }
+
+            // Increment the total number of bytes read
+            recv_size += read_size;
+            printf("recv_size%d", recv_size);
+            printf("packet_index%d", packet_index);
+            syslog(LOG_INFO, "recv_size%d", recv_size);
+            syslog(LOG_INFO, "packet_index%d", packet_index);
+
+            packet_index++;
+        }
+    }
+    
+    send(sockfd, &ack, 1, 0);
+    printf("sent ack\n");
+    syslog(LOG_INFO, "Total received image size: %i\n", recv_size);
+    printf("Total received image size: %i\n", recv_size);
+    fclose(image);
+    return 0;
+    
+}
+
+int main()
+{
+   char *ip = "172.20.10.4";
+    int port = 8080;
+    int e;
+
+    int  new_sock;
+    struct sockaddr_in server_addr, new_addr;
+    socklen_t addr_size;
+    int retval=0;
+        if ((signal(SIGINT, sig_handler) == SIG_ERR) || (signal(SIGTERM, sig_handler) == SIG_ERR))
+    {
+        syslog(LOG_ERR, " Signal handler error");
+        cleanup_on_exit();
+        exit(EXIT_FAILURE);
+    }
+
+    int client_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (client_fd < 0) {
+        perror("[-]Error in socket");
+        exit(1);
+    }
+    sock_fd=client_fd;
+    printf("[+]Client socket created.\n");
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);  // Use htons to convert port to network byte order
+   server_addr.sin_addr.s_addr = inet_addr(ip);
+    if ((retval = connect(client_fd, (struct sockaddr *)&server_addr, sizeof(server_addr))) < 0)
+    {
+        syslog(LOG_ERR, "Connection Failed\n");
+         perror("[-]Connection Failed\n");
+        exit(EXIT_FAILURE);
+    }
+    printf("[+]connection created.\n");
+	while (!st_kill_process)
+    {
+        // recieve image from the server
+        if (write_file(client_fd) == -1)
+        {
+            perror("[-]image receive failure\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+
+/*
+    while (1) {
+        addr_size = sizeof(new_addr);
+        new_sock = accept(sockfd, (struct sockaddr*)&new_addr, &addr_size);
+        if (new_sock < 0) {
+            perror("[-]Error in Accepting");
+            exit(1);
+        }
+        printf("[+]Connection accepted from %s:%d\n", inet_ntoa(new_addr.sin_addr), ntohs(new_addr.sin_port));
+
+        int file_count = 1; // Counter for the received files
+
+        // Write received data to files with incremental names until connection closes
+        while (1) {
+            write_file(new_sock, file_count);
+            printf("[+]Data written to the file: capture.ppm\n");
+
+            // Check if there's more data to receive
+		if(file_count==1000) break;
+
+            file_count++; // Increment file count for the next file
+        }
+
+        close(new_sock);
+    }*/
+
+    close(sock_fd);
+    return 0;
 }

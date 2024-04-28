@@ -1,200 +1,186 @@
-/* 
- * udpclient.c - A simple UDP client
- * usage: udpclient <host> <port>
- */
+
+/************************************header files***************************/
+#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/types.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
-#include <netdb.h> 
-#include <dirent.h>
+#include <unistd.h>
+#include <syslog.h>
 
-#define BUFSIZE 1024
-#define NMBEB 1
+/***********************************Macros**********************************/
+#define PORT 9000
 
-/* 
- * error - wrapper for perror
- */
-void error(char *msg) {
-    perror(msg);
-    exit(0);
+/*****************************Function definition******************************/
+void send_image(int socket)
+{
+	// File descriptor to read the image data
+	FILE *picture;
+	int size, read_size, stat, packet_index;
+	char send_buffer[10240], read_buffer[256];
+	packet_index = 1;
+
+	// Open the image file
+	char *filename = "/home/aneesh/courses/common_final/demo/capture.ppm";
+	picture = fopen("filename", "r");
+	syslog(LOG_INFO,"Getting Picture Size\n");
+
+	if (picture == NULL)
+	{
+		syslog(LOG_ERR,"Error Opening Image File");
+	}
+
+	int returnStatus = fseek(picture, 0, SEEK_END);
+	if (returnStatus == -1)
+	{
+		syslog(LOG_ERR,"fseek end failed");
+		exit(EXIT_FAILURE);
+	}
+	// Get the size of the image
+	size = ftell(picture);
+	if (size == -1)
+	{
+		syslog(LOG_ERR,"ftell failed");
+		exit(EXIT_FAILURE);
+	}
+	returnStatus = fseek(picture, 0, SEEK_SET);
+	if (returnStatus == -1)
+	{
+		syslog(LOG_ERR,"fseek set failed");
+		exit(EXIT_FAILURE);
+	}
+	syslog(LOG_INFO,"Total Picture size: %i\n", size);
+
+	// Send Picture Size
+	syslog(LOG_INFO,"Sending Picture Size\n");
+	returnStatus = write(socket, (void *)&size, sizeof(int));
+	if (returnStatus == -1)
+	{
+		syslog(LOG_ERR,"Write failed");
+		exit(EXIT_FAILURE);
+	}
+	// Send Picture as Byte Array
+	syslog(LOG_INFO,"Sending Picture as Byte Array\n");
+
+	do
+	{ // Read while we get errors that are due to signals.
+		stat = read(socket, &read_buffer, 255);
+		 if (stat == -1)
+		{
+			syslog(LOG_ERR,"Read failed");
+			exit(EXIT_FAILURE);
+		}
+		syslog(LOG_INFO,"Bytes read: %i\n", stat);
+	} while (stat < 0);
+
+	syslog(LOG_INFO,"Received data in socket\n");
+	syslog(LOG_INFO,"Socket data: %s\n", read_buffer);
+
+	while (!feof(picture))
+	{
+		// while(packet_index = 1){
+		// Read from the file into our send buffer
+		read_size = fread(send_buffer, 1, sizeof(send_buffer) - 1, picture);
+		if (read_size < 0)
+			{
+				syslog(LOG_ERR,"fread failed");
+				exit(EXIT_FAILURE);
+			}
+		// Send data through our socket
+		do
+		{
+			stat = write(socket, send_buffer, read_size);
+			if (stat == -1)
+			{
+				syslog(LOG_ERR,"Write failed");
+				exit(EXIT_FAILURE);
+			}
+		} while (stat < 0);
+
+		syslog(LOG_INFO,"Packet Number: %i\n", packet_index);
+		syslog(LOG_INFO,"Packet Size Sent: %i\n", read_size);
+		syslog(LOG_INFO," \n");
+		syslog(LOG_INFO," \n");
+
+		packet_index++;
+
+		// Zero out our send buffer
+		bzero(send_buffer, sizeof(send_buffer));
+	}
 }
 
-int main(int argc, char **argv) 
+int main()
 {
-    int sockfd, portno, n;
-    int serverlen;
-    struct sockaddr_in serveraddr;
-    struct hostent *server;
-    char *hostname;
-    char buf[BUFSIZE];
-    char command[BUFSIZE];
-    char file_name[BUFSIZE];
+	int server_fd, new_socket, valread;
+	struct sockaddr_in address;
+	int opt = 1;
+	int addrlen = sizeof(address);
+	char buffer[1024] = {0};
+	char *hello = "Hello from server";
 
-    /* check command line arguments are valid in count */
-    if (argc != 3) {
-       fprintf(stderr,"usage: %s <hostname> <port>\n", argv[0]);
-       //exit(0);
-    }
-    hostname = argv[1];
-    // converting string input into an integer.
-    portno = atoi(argv[2]);
-    if(portno < 5001 || portno > 65534)
-    {
-        error("Port should be grater than 5000 and less than 65535");
-    }
+	// Creating socket file descriptor
+	if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+	{
+		perror("socket failed");
+		exit(EXIT_FAILURE);
+	}
 
-    /* socket: create the socket */
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sockfd < 0) 
-        error("ERROR opening socket");
+	// Forcefully attaching socket to the port 8080
+	if (setsockopt(server_fd, SOL_SOCKET,
+				   SO_REUSEADDR | SO_REUSEPORT, &opt,
+				   sizeof(opt)))
+	{
+		perror("setsockopt");
+		exit(EXIT_FAILURE);
+	}
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = INADDR_ANY;
+	address.sin_port = htons(PORT);
 
-    /* gethostbyname: get the server's DNS entry */
-    server = gethostbyname(hostname);
-    if (server == NULL) {
-        fprintf(stderr,"ERROR, no such host as %s\n", hostname);
-        exit(0);
-    }
-
-    /* build the server's Internet address */
-    bzero((char *) &serveraddr, sizeof(serveraddr));
-    serveraddr.sin_family = AF_INET;
-    bcopy((char *)server->h_addr, (char *)&serveraddr.sin_addr.s_addr, server->h_length);
-    serveraddr.sin_port = htons(portno);
-
-    while(1)
-    {
-      /* get a message from the user */
-      bzero(buf, BUFSIZE);
-      bzero(command, BUFSIZE);
-      bzero(file_name, BUFSIZE);
-      printf("Please enter msg: ");
-      fgets(buf, BUFSIZE, stdin);
-      serverlen = sizeof(serveraddr);
-      int count=0;
-      	DIR* directory;
-	struct dirent *entry;
-	directory=opendir("/mnt/c/Users/gurra/Pictures/a");
-	while((entry= readdir(directory))!= NULL)
-        {
-        count++;
-        }
-    closedir(directory);
-    directory=opendir("/mnt/c/Users/gurra/Pictures/a");
-        printf("\r count is %d\n",count);
-        bzero(command, 1024);
-        sprintf(command, "%d", count);
-	n = sendto(sockfd, command, strlen(command), 0, (struct sockaddr*)&serveraddr, serverlen);
-        if (n < 0)
-        {
-        	error("ERROR in sendto");
-        }         
-        bzero(command, 1024);
-	char *token = strtok(buf, " \t\n");
-      	if (token != NULL) 
-      	{
-          strcpy(command, token); // Copy the first token to cmd
-        }
-        
-        
-while(count--)
-{
-		entry= readdir(directory);
-		strcpy(file_name, entry->d_name);
-    if(strcmp(file_name, ".")==0)
-    {
-      bzero(file_name, BUFSIZE);
-      continue;
-    }
-    if(strcmp(file_name, "..")==0)
-    {
-      bzero(file_name, BUFSIZE);
-      continue;
-    }
-		//strcpy(file_name, entry->d_name);
-		//printf("%s",file_name);
-		serverlen = sizeof(serveraddr);
-        n = sendto(sockfd, buf, strlen(buf), 0, (struct sockaddr*)&serveraddr, serverlen);
-        if (n < 0) 
-          error("ERROR in sendto");
-        n = sendto(sockfd, command, strlen(command), 0, (struct sockaddr*)&serveraddr, serverlen);
-        if (n < 0) 
-          error("ERROR in sendto");
-        n = sendto(sockfd, file_name, strlen(file_name), 0, (struct sockaddr*)&serveraddr, serverlen);
-        if (n < 0) 
-          error("ERROR in sendto");
-
-      bzero(buf,1024);
-      
-
-      if (!(strcmp(command,"put")))
-      {
-        printf("File to be transferred is : %s\n",file_name);
-        char full_path[200];
-        snprintf(full_path, 200, "/mnt/c/Users/gurra/Pictures/a/%s", file_name);
-        FILE* file_read = fopen(full_path, "rb");
-
-        //FILE* file_read= fopen(file_name,"rb");
-        if(file_read== NULL)
-        {
-          printf("The file %s requested  DOES NOT EXIST \n", file_name);
-          continue;
-        }
-        // serverlen = sizeof(serveraddr);
-        // n = sendto(sockfd, buf, strlen(buf), 0, &serveraddr, serverlen);
-        // if (n < 0) 
-        //   error("ERROR in sendto");
-
-        // now should send the file size to the server.
-        // Seek to the end of the file to determine its size
-        fseek(file_read, 0, SEEK_END);
-        // Get the file size
-        int file_size= ftell(file_read);
-        //fclose(file_read);
-        printf("File_size is determined as %d \n",file_size);
-        bzero(buf, 1024);
-        sprintf(buf, "%d", file_size);
-        n = sendto(sockfd, buf, strlen(buf), 0,
-               (struct sockaddr *) &serveraddr, serverlen);
-        if (n < 0)
-          error("ERROR in sendto");
-        bzero(buf, 1024);
-        fseek(file_read, 0, SEEK_SET);
-        // have to send file data 1024 bytes at atime.
-          //int cumulatives_bytes_transferred=0;
-          int byte_transfer_size=1024;
-          for(int cumulatives_bytes_transferred=0; file_size>=cumulatives_bytes_transferred;cumulatives_bytes_transferred+=byte_transfer_size)
-          {
-            bzero(buf, sizeof(buf));
-            // considering last transfer case.
-            if(file_size- cumulatives_bytes_transferred < 1024)
-            {
-              byte_transfer_size= file_size- cumulatives_bytes_transferred;
-            }
-            int bytes_sent=fread(buf, 1, byte_transfer_size, file_read);
-            n = sendto(sockfd, buf, bytes_sent, 0, (struct sockaddr *)&serveraddr, serverlen);
-            if (n < 0)
-              error("ERROR in sendto");
-            // cumulative count increments by an amount of byte_transfer_size.
-            printf("Sent %d bytes of data in total till now from %d in total\n",cumulatives_bytes_transferred,file_size);
-              
-            if(byte_transfer_size<1024)
-            {
-                printf("file transfer complete from  server\n");
-                fclose(file_read);
-                remove(full_path);
-                break;
-            }
-          }
-      }
+	// Forcefully attaching socket to the port 8080
+	if (bind(server_fd, (struct sockaddr *)&address,
+			 sizeof(address)) < 0)
+	{
+		perror("bind failed");
+		exit(EXIT_FAILURE);
+	}
+	if (listen(server_fd, 3) < 0)
+	{
+		perror("listen");
+		exit(EXIT_FAILURE);
+	}
+	if ((new_socket = accept(server_fd, (struct sockaddr *)&address,(socklen_t *)&addrlen)) < 0)
+	{
+		perror("accept");
+		exit(EXIT_FAILURE);
+	}
+	// Read sample data from client
+	valread = read(new_socket, buffer, 1024);
+	if (valread == -1)
+	{
+		perror("read from client failed");
+		exit(EXIT_FAILURE);
 	
-		
-		
-}
-    }
-
-     return 0;
+	}
+	syslog(LOG_INFO,"%s\n", buffer);
+	// Send a sample test data
+	int returnStatus = send(new_socket, hello, strlen(hello), 0);
+	if (returnStatus == -1)
+	{
+		perror("Send to client failed");
+		exit(EXIT_FAILURE);
+	}
+	syslog(LOG_INFO,"Hello message sent\n");
+	
+	syslog(LOG_INFO,"Init Image send\n");
+	send_image(new_socket);
+	syslog(LOG_INFO,"Image sending Completed\n");
+	// closing the connected socket
+	returnStatus = close(new_socket);
+	if (returnStatus == -1)
+	{
+		perror("Close File descriptor");
+		exit(EXIT_FAILURE);
+	}
+	return 0;
 }
